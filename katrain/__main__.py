@@ -133,6 +133,10 @@ class KaTrainGui(Screen, KaTrainBase):
         self.last_key_down = None
         self.last_focus_event = 0
 
+        self.live_game_moves = 0
+        self.live_game_cur_node = None
+        self.live_game_event = None
+
     def log(self, message, level=OUTPUT_INFO):
         super().log(message, level)
         if level == OUTPUT_KATAGO_STDERR and "ERROR" not in self.controls.status.text:
@@ -623,18 +627,112 @@ class KaTrainGui(Screen, KaTrainBase):
         popup_contents.filesel.on_submit = readfile
         save_game_popup.open()
 
+    def main_variation_moves(self):
+        cnt = 0
+        curr_node = self.game.root
+        while curr_node.children:
+            curr_node = curr_node.children[0]
+            cnt += 1
+        return (cnt, curr_node)
+
+    def xingzhen_headers(self, live_game_id):
+        headers = {"Referer": "https://www.19x19.com/engine/live/data/%d" % live_game_id,
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36"}
+        return headers
+
+    def sync_xingzhen_live_game_moves(self, live_game_id):
+        # fetch latest moves from:
+        # https://www.19x19.com/api/engine/golives/situation/<live_game_id>?no_cache=1
+        # TODO: move into a separated thread
+
+        http = urllib3.PoolManager()
+        import logging
+        logging.getLogger("urllib3").setLevel(logging.INFO)
+        live_json_url = "https://www.19x19.com/api/engine/golives/situation/%d?no_cache=1" % live_game_id
+        json_response = json.loads(http.request("GET", live_json_url,
+                                                headers = self.xingzhen_headers(live_game_id))
+                                   .data.decode("utf-8"))
+        all_moves = []
+        if json_response['code'] == '0':
+            all_moves = json_response['data']['moves'].split(',')
+
+            # cancel event if game ended?
+            # https://www.19x19.com/engine/live/data/162447
+            live_game_result = json_response['data']['liveMatch']['gameResult']
+            if live_game_result != '':
+                self.live_game_event.cancel()
+                self.live_game_event = None
+                self.log(f"Live game ended with result: {live_game_result}, Autoplay exiting.", OUTPUT_INFO)
+            # TODO: testing only, removed later
+            # all_moves.append('178');
+
+        new_moves = all_moves[self.live_game_moves:]
+        # play new moves
+        # TODO: locking needed here? race-conditions?
+        if new_moves:
+            # [1] start from the latest live game
+            self.game.set_current_node(self.live_game_cur_node)
+            self.update_state()
+
+            # [2] autoplay the new moves
+            live_move_num = self.live_game_moves
+            for move in new_moves:
+                live_move_num += 1
+                num = int(move)
+                coord = (num % 19, 18 - num // 19)
+                self._do_play(coord)
+
+                live_move = Move(coord).gtp()
+                cur_node_move = self.live_game_cur_node.move.gtp() if self.live_game_cur_node.move else None
+                self.log(f" == Autoplay live game move #{live_move_num}: {self.last_player_info.player} {live_move} ON {cur_node_move}", OUTPUT_INFO)
+
+            # [3] update the live curr_node
+            self.live_game_moves, self.live_game_cur_node = self.main_variation_moves()
+
     def load_sgf_from_clipboard(self):
         clipboard = Clipboard.paste()
         if not clipboard:
             self.controls.set_status("Ctrl-V pressed but clipboard is empty.", STATUS_INFO)
             return
 
-        url_match = re.match(r"(?P<url>https?://[^\s]+)", clipboard)
-        if url_match:
-            self.log("Recognized url: " + url_match.group(), OUTPUT_INFO)
+        # url like https://www.foxwq.com/qipu/newlist/id/2025032978223082.html
+        is_from_foxwq = re.match(r"https://www.foxwq.com/qipu/newlist/id", clipboard)
+
+        # autoplay xingzhen live game, live game url is like:
+        # https://www.19x19.com/engine/live/data/162421
+        pat_xingzhen_live_url = r"https://www.19x19.com/engine/live/data/(\d+)"
+        xingzhen_live_url_match = re.match(pat_xingzhen_live_url, clipboard)
+
+        is_xingzhen_live = False
+        if xingzhen_live_url_match:
+            live_game_id = int(xingzhen_live_url_match.group(1))
+
+            # xingzhen live
+            is_xingzhen_live = True
+            self.live_game_moves = 0
+            self.live_game_cur_node = None
+
+            # fetch sgf from:
+            # https://www.19x19.com/api/engine/golives/<live_game_id>
+            # referer: https://www.19x19.com/engine/live/data/162421
+            # user-agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36
+
             http = urllib3.PoolManager()
-            response = http.request("GET", url_match.group())
-            clipboard = response.data.decode("utf-8")
+            sgf_json_url = "https://www.19x19.com/api/engine/golives/%d" % live_game_id
+            json_response = json.loads(http.request("GET", sgf_json_url,
+                                                    headers = self.xingzhen_headers(live_game_id))
+                                       .data.decode("utf-8"))
+            live_game_sgf = ""
+            if json_response['code'] == '0':
+                live_game_sgf = json_response['data']['sgf']
+                clipboard = live_game_sgf
+        else:
+            url_match = re.match(r"(?P<url>https?://[^\s]+)", clipboard)
+            if url_match:
+                self.log("Recognized url: " + url_match.group(), OUTPUT_INFO)
+                http = urllib3.PoolManager()
+                response = http.request("GET", url_match.group())
+                clipboard = response.data.decode("utf-8")
 
         try:
             move_tree = KaTrainSGF.parse_sgf(clipboard)
@@ -643,11 +741,30 @@ class KaTrainGui(Screen, KaTrainBase):
                 i18n._("Failed to import from clipboard").format(error=exc, contents=clipboard[:50]), STATUS_INFO
             )
             return
+
+        # cleanup move_tree for sgf parsed from https://www.foxwq.com/qipu.html
+        # url like: https://www.foxwq.com/qipu/newlist/id/2025032978223082.html
+        # keep only the first child
+        if is_from_foxwq:
+            cur_node = move_tree
+            while cur_node.children:
+                # keep only the first children
+                first_child = cur_node.children[0]
+                cur_node.children = [first_child]
+                cur_node = first_child
+
         move_tree.nodes_in_tree[-1].analyze(
             self.engine, analyze_fast=False
         )  # speed up result for looking at end of game
+
         self._do_new_game(move_tree=move_tree, analyze_fast=True)
         self("redo", 9999)
+
+        if is_xingzhen_live:
+            self.live_game_moves, self.live_game_cur_node = self.main_variation_moves()
+            # update every 5 seconds for xingzhen live game
+            self.live_game_event = Clock.schedule_interval(
+                lambda _dt: self.sync_xingzhen_live_game_moves(live_game_id),5)
         self.log("Imported game from clipboard.", OUTPUT_INFO)
 
     def on_touch_up(self, touch):
