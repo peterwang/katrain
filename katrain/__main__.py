@@ -435,11 +435,12 @@ class KaTrainGui(Screen, KaTrainBase):
     def _play_stone_sound(self, _dt=None):
         play_sound(random.choice(Theme.STONE_SOUNDS))
 
-    def _do_play(self, coords):
+    def _do_play(self, coords, played_node = []):
         self.board_gui.animating_pv = None
         try:
             old_prisoner_count = self.game.prisoner_count["W"] + self.game.prisoner_count["B"]
-            self.game.play(Move(coords, player=self.next_player_info.player))
+            pnode = self.game.play(Move(coords, player=self.next_player_info.player))
+            played_node.append(pnode)
             if old_prisoner_count < self.game.prisoner_count["W"] + self.game.prisoner_count["B"]:
                 play_sound(Theme.CAPTURING_SOUND)
             elif not self.game.current_node.is_pass:
@@ -670,24 +671,27 @@ class KaTrainGui(Screen, KaTrainBase):
         # play new moves
         # TODO: locking needed here? race-conditions?
         if new_moves:
+            self.log(f"NEW: {new_moves} ALL: {all_moves[-10:]}", OUTPUT_INFO)
+
             # [1] start from the latest live game
             self.game.set_current_node(self.live_game_cur_node)
             self.update_state()
 
             # [2] autoplay the new moves
             live_move_num = self.live_game_moves
+            played_node = []
             for move in new_moves:
                 live_move_num += 1
                 num = int(move)
                 coord = (num % 19, 18 - num // 19)
-                self._do_play(coord)
+                self._do_play(coord, played_node)
 
                 live_move = Move(coord).gtp()
                 cur_node_move = self.live_game_cur_node.move.gtp() if self.live_game_cur_node.move else None
                 self.log(f" == Autoplay live game move #{live_move_num}: {self.last_player_info.player} {live_move} ON {cur_node_move}", OUTPUT_INFO)
 
             # [3] update the live curr_node
-            self.live_game_moves, self.live_game_cur_node = self.main_variation_moves()
+            self.live_game_moves, self.live_game_cur_node = len(all_moves), played_node[-1]
 
     def load_sgf_from_clipboard(self):
         clipboard = Clipboard.paste()
