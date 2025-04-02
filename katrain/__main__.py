@@ -641,6 +641,11 @@ class KaTrainGui(Screen, KaTrainBase):
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36"}
         return headers
 
+    def yike_headers(self, referer_url):
+        headers = {"Referer": referer_url,
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36"}
+        return headers
+
     def sync_xingzhen_live_game_moves(self, live_game_id):
         # fetch latest moves from:
         # https://www.19x19.com/api/engine/golives/situation/<live_game_id>?no_cache=1
@@ -699,6 +704,10 @@ class KaTrainGui(Screen, KaTrainBase):
             self.controls.set_status("Ctrl-V pressed but clipboard is empty.", STATUS_INFO)
             return
 
+        # yike hawkeye report
+        # https://hawkeye.yikeweiqi.com/report/index?token=5d36f62387343ba8&code=eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJpYXQiOjE3NDM2MDU3NjEsImV4cCI6MTc0MzY5MjE2MSwiaWQiOjAsImV4dGVuZCI6eyJ0b2tlbiI6IjVkMzZmNjIzODczNDNiYTgiLCJpc3ZpcCI6MX19.AeXSAKkJ5FBjXW-e4Tr2FyLjYiT5hgdmUdngsG8O2mg#/desktop
+        is_from_yike = re.match(r"https://hawkeye.yikeweiqi.com/report/index\?token=([0-9a-f]+)", clipboard)
+
         # url like https://www.foxwq.com/qipu/newlist/id/2025032978223082.html
         is_from_foxwq = re.match(r"https://www.foxwq.com/qipu/newlist/id", clipboard)
 
@@ -728,6 +737,17 @@ class KaTrainGui(Screen, KaTrainBase):
                                        .data.decode("utf-8"))
             live_game_sgf = ""
             if json_response['code'] == '0':
+                live_game_sgf = json_response['data']['sgf']
+                clipboard = live_game_sgf
+        elif is_from_yike:
+            game_token = is_from_yike.group(1)
+            # curl -s "https://hawkeye.yikeweiqi.com/api/report/hawk_eye/5d36f62387343ba8?cache="|jq .data.sgf
+            http = urllib3.PoolManager()
+            sgf_json_url = "https://hawkeye.yikeweiqi.com/api/report/hawk_eye/%s?cache=" % game_token
+            json_response = json.loads(http.request("GET", sgf_json_url, headers = self.yike_headers(clipboard))
+                                       .data.decode("utf-8"))
+            live_game_sgf = ""
+            if json_response['code'] == 0:
                 live_game_sgf = json_response['data']['sgf']
                 clipboard = live_game_sgf
         else:
