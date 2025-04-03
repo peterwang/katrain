@@ -786,9 +786,18 @@ class KaTrainGui(Screen, KaTrainBase):
 
         if is_xingzhen_live:
             self.live_game_moves, self.live_game_cur_node = self.main_variation_moves()
-            # update every 5 seconds for xingzhen live game
+
+            # cancel timer IF re-paste / paste a new live game URL
+            if self.live_game_event:
+                self.live_game_event.cancel()
+                self.live_game_event = None
+                self.log(f"Detected New Live game from clipboard, Old Autoplay exiting.", OUTPUT_INFO)
+
+            # Sync every 5 seconds for xingzhen live game
+            live_sync_interval = 5
+            self.log(f"Starting Sync New Live game every {live_sync_interval} seconds.", OUTPUT_INFO)
             self.live_game_event = Clock.schedule_interval(
-                lambda _dt: self.sync_xingzhen_live_game_moves(live_game_id),5)
+                lambda _dt: self.sync_xingzhen_live_game_moves(live_game_id), live_sync_interval)
         self.log("Imported game from clipboard.", OUTPUT_INFO)
 
     def on_touch_up(self, touch):
